@@ -14,6 +14,7 @@ use gltf::json::{image::MimeType, Index};
 
 const MAX_SIZE: u32 = 4096;
 
+static BIN_NVTT_EXPORT: &str = "nvtt_export";
 static BIN_TOKTX: &str = "toktx";
 
 #[derive(Parser)]
@@ -25,7 +26,7 @@ struct Args {
     /// Where to output the squished output.
     output: PathBuf,
 
-    /// What texture format to use. Can be 'astc' (default) or 'rgba8'.
+    /// What texture format to use. Options: astc (default), rgba8, bgra8
     #[clap(long, default_value = "astc")]
     format: TextureFormat,
 
@@ -40,11 +41,16 @@ struct Args {
     /// Disable using Zstandard supercompression on the images.
     #[clap(long)]
     no_supercompression: bool,
+
+    /// Use Nvidia Texture Tools (NVTT) instead of toktx for handling textures.
+    #[clap(long)]
+    use_nvtt: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TextureFormat {
     Rgba8,
+    Bgra8,
     Astc,
 }
 
@@ -54,6 +60,7 @@ impl FromStr for TextureFormat {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "rgba8" => Ok(Self::Rgba8),
+            "bgra8" => Ok(Self::Bgra8),
             "astc" => Ok(Self::Astc),
             _ => bail!("unknown texture format '{s}', expected 'rgba8' or 'astc'"),
         }
@@ -73,6 +80,7 @@ struct SquishContext {
     input: Input,
     use_cache: bool,
     use_supercompression: bool,
+    use_nvtt: bool,
     texture_format: TextureFormat,
 }
 
@@ -117,6 +125,7 @@ fn squish(args: Args) -> anyhow::Result<()> {
         use_cache,
         texture_format: args.format,
         use_supercompression: !args.no_supercompression,
+        use_nvtt: args.use_nvtt,
     };
 
     let optimized_glb = context.optimize()?;
@@ -273,6 +282,7 @@ impl SquishContext {
                 self.texture_format,
                 texture_type,
                 self.use_supercompression,
+                self.use_nvtt,
             )?;
         }
 
@@ -423,6 +433,7 @@ fn compress_image(
     texture_format: TextureFormat,
     texture_type: TextureType,
     supercompress: bool,
+    use_nvtt: bool,
 ) -> anyhow::Result<()> {
     log::debug!("Deleting destination file if it exists");
 
@@ -433,13 +444,59 @@ fn compress_image(
         }
     }
 
-    toktx(
-        input_path,
-        output_path,
-        texture_format,
-        texture_type,
-        supercompress,
-    )?;
+    if use_nvtt {
+        nvtt(input_path, output_path, texture_format, supercompress)?;
+    } else {
+        toktx(
+            input_path,
+            output_path,
+            texture_format,
+            texture_type,
+            supercompress,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn nvtt(
+    input_path: &Path,
+    output_path: &Path,
+    format: TextureFormat,
+    supercompress: bool,
+) -> anyhow::Result<()> {
+    let mut command = Command::new(BIN_NVTT_EXPORT);
+
+    if supercompress {
+        command.args(["--zcmp", "20"]);
+    }
+
+    match format {
+        TextureFormat::Rgba8 => bail!("NVTT does not support RGBA8"),
+        TextureFormat::Bgra8 => {
+            command.args(["--format", "24"]);
+        }
+        TextureFormat::Astc => {
+            command.args(["--format", "1"]); // astc-ldr-10x10
+        }
+    }
+
+    command.arg(input_path);
+    command.arg("--output-file").arg(output_path);
+
+    log::debug!(
+        "Running {BIN_NVTT_EXPORT} with args {:?}",
+        command.get_args().collect::<Vec<_>>()
+    );
+
+    let output = command.output().context("failed to run nvtt_export")?;
+    if !output.status.success() {
+        log::error!(
+            "Error running nvtt_export with args {:?}",
+            command.get_args().collect::<Vec<_>>()
+        );
+        bail!("{}", String::from_utf8_lossy(&output.stderr));
+    }
 
     Ok(())
 }
@@ -465,6 +522,9 @@ fn toktx(
     match format {
         TextureFormat::Rgba8 => {
             command.args(["--target_type", "RGBA"]);
+        }
+        TextureFormat::Bgra8 => {
+            command.args(["--target_type", "BGRA"]);
         }
         TextureFormat::Astc => {
             command.args(["--encode", "astc", "--astc_blk_d"]);
