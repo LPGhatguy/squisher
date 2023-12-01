@@ -474,7 +474,7 @@ fn nvtt(
     match format {
         TextureFormat::Rgba8 => bail!("NVTT does not support RGBA8"),
         TextureFormat::Bgra8 => {
-            command.args(["--format", "24"]);
+            command.args(["--format", "25"]); // bgra8
         }
         TextureFormat::Astc => {
             command.args(["--format", "1"]); // astc-ldr-10x10
@@ -622,6 +622,7 @@ mod tests {
             verbose: true,
             no_cache: true,
             no_supercompression: false,
+            use_nvtt: false,
         };
 
         let verification = VerifyArgs {
@@ -644,11 +645,35 @@ mod tests {
             verbose: true,
             no_cache: true,
             no_supercompression: false,
+            use_nvtt: false,
         };
 
         let verification = VerifyArgs {
             path: "test_output/BoxTexturedBinary_raw.glb",
             format: ktx2::Format::R8G8B8A8_SRGB,
+            mip_level_count: 9,
+        };
+
+        fs_err::create_dir_all("test_output").unwrap();
+        squish(args).unwrap();
+        verify(verification);
+    }
+
+    #[test]
+    fn glb_bgra8_nvtt() {
+        let args = Args {
+            input: "test_data/BoxTexturedBinary.glb".into(),
+            output: "test_output/BoxTexturedBinary_bgra_nvtt.glb".into(),
+            format: TextureFormat::Bgra8,
+            verbose: true,
+            no_cache: true,
+            no_supercompression: false,
+            use_nvtt: true,
+        };
+
+        let verification = VerifyArgs {
+            path: "test_output/BoxTexturedBinary_bgra_nvtt.glb",
+            format: ktx2::Format::B8G8R8A8_SRGB,
             mip_level_count: 9,
         };
 
@@ -666,6 +691,7 @@ mod tests {
             verbose: true,
             no_cache: true,
             no_supercompression: false,
+            use_nvtt: false,
         };
 
         squish(first_args).unwrap();
@@ -677,6 +703,7 @@ mod tests {
             verbose: true,
             no_cache: true,
             no_supercompression: false,
+            use_nvtt: false,
         };
 
         squish(second_args).unwrap();
